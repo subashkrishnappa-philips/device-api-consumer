@@ -1,0 +1,34 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+
+# ── Consumer Tests ────────────────────────────────────────────────────────────
+# Owned by the consuming team. This solution is intentionally separate from
+# DeviceApi.sln (provider) to reflect real-world cross-team ownership.
+# In production this would live in its own repository.
+# ─────────────────────────────────────────────────────────────────────────────
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeviceApi.Consumer.Tests", "tests\DeviceApi.Consumer.Tests\DeviceApi.Consumer.Tests.csproj", "{A1B2C3D4-0002-0002-0002-000000000002}"
+EndProject
+
+# ── Solution Folder ───────────────────────────────────────────────────────────
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{F0000002-0000-0000-0000-000000000002}"
+EndProject
+
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|Any CPU = Debug|Any CPU
+        Release|Any CPU = Release|Any CPU
+    EndGlobalSection
+
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {A1B2C3D4-0002-0002-0002-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+        {A1B2C3D4-0002-0002-0002-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+        {A1B2C3D4-0002-0002-0002-000000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+        {A1B2C3D4-0002-0002-0002-000000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+    EndGlobalSection
+
+    GlobalSection(NestedProjects) = preSolution
+        {A1B2C3D4-0002-0002-0002-000000000002} = {F0000002-0000-0000-0000-000000000002}
+    EndGlobalSection
+EndGlobal

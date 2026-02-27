@@ -1,0 +1,158 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Consumer Contract Tests — device-api-consumer
+#
+# Owned by: Mobile Device Management Team  (consumer team)
+#
+# What runs:
+#   1. Build DeviceApi.Consumer.sln
+#   2. Run consumer tests — generates pact file in contracts/
+#   3. Upload pact file as artifact "pact-contracts" (retained 90 days)
+#   4. On main push: dispatch "pact-contracts-updated" to device-api (provider)
+#      so the provider pipeline immediately re-verifies the new contract.
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Consumer Contract Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+  CONFIGURATION: Release
+
+jobs:
+  # ── Job 1: Build ─────────────────────────────────────────────────────────────
+  build:
+    name: Restore & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-consumer-${{ runner.os }}-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: nuget-consumer-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore DeviceApi.Consumer.sln
+
+      - name: Build
+        run: dotnet build DeviceApi.Consumer.sln --no-restore --configuration ${{ env.CONFIGURATION }}
+
+      - name: Cache build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            tests/**/bin
+            tests/**/obj
+          key: build-consumer-${{ runner.os }}-${{ github.sha }}
+
+  # ── Job 2: Generate Pact Contracts ───────────────────────────────────────────
+  generate-pacts:
+    name: Generate & Publish Pact Contracts
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-consumer-${{ runner.os }}-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: nuget-consumer-${{ runner.os }}-
+
+      - name: Restore build output cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            tests/**/bin
+            tests/**/obj
+          key: build-consumer-${{ runner.os }}-${{ github.sha }}
+
+      # contracts/ must exist before tests run so PactNet can write the pact file
+      - name: Ensure contracts directory exists
+        run: mkdir -p contracts
+
+      - name: Run consumer tests (generates pact contracts)
+        run: |
+          dotnet test tests/DeviceApi.Consumer.Tests \
+            --no-build \
+            --configuration ${{ env.CONFIGURATION }} \
+            --logger "trx;LogFileName=consumer-results.trx" \
+            --logger "console;verbosity=normal" \
+            --results-directory TestResults/
+
+      - name: List generated pact files
+        run: |
+          echo "── contracts/ ──────────────────────────────"
+          ls -la contracts/
+
+      # ── Publish pact files so provider CI can download them ──────────────────
+      - name: Upload pact contracts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-contracts
+          path: contracts/*.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: consumer-test-results-${{ github.sha }}
+          path: TestResults/
+
+      - name: Publish test summary
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Consumer Contract Test Results
+          path: TestResults/*.trx
+          reporter: dotnet-trx
+          fail-on-error: true
+
+      # ── Notify provider team: trigger provider verification pipeline ──────────
+      # Only fire on main branch pushes (not PRs) to avoid noise.
+      #
+      # Required secret: PROVIDER_REPO_TOKEN — a PAT or fine-grained token
+      # with "Actions: write" (workflow dispatch) permission on device-api repo.
+      - name: Dispatch provider verification
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          repository: ${{ github.repository_owner }}/device-api
+          event-type: pact-contracts-updated
+          client-payload: |
+            {
+              "consumer_repo": "${{ github.repository }}",
+              "consumer_run_id": "${{ github.run_id }}",
+              "consumer_sha": "${{ github.sha }}",
+              "consumer_ref": "${{ github.ref_name }}"
+            }
