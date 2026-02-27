@@ -28,6 +28,30 @@ on:
     types:
       - pact-contracts-updated  # fired by provider CI after API changes
       - swagger-updated          # fired by provider's swagger-sync when new endpoints added
+  # Manual trigger — use this when CONSUMER_REPO_SECRET is not yet configured and
+  # the automatic swagger-updated dispatch is skipped.  Find the provider run ID
+  # in the swagger-sync job summary or the Actions URL.
+  workflow_dispatch:
+    inputs:
+      provider_repo:
+        description: 'Provider repo (owner/repo)'
+        required: true
+        default: 'subashkrishnappa-philips/device-api'
+      provider_run_id:
+        description: 'swagger-sync Actions run ID'
+        required: true
+      provider_sha:
+        description: 'Provider commit SHA'
+        required: false
+        default: 'manual'
+      stub_count:
+        description: 'Number of stubs generated'
+        required: false
+        default: '?'
+      swagger_url:
+        description: 'Link to the swagger-sync run'
+        required: false
+        default: ''
 
 concurrency:
   # Use event name in group so swagger-updated dispatches don't cancel running push jobs
@@ -198,7 +222,10 @@ jobs:
   create-stub-pr:
     name: Open Stub PR for New Swagger Endpoints
     runs-on: ubuntu-latest
-    if: github.event_name == 'repository_dispatch' && github.event.action == 'swagger-updated'
+    # Runs automatically via repository_dispatch (when CONSUMER_REPO_SECRET is set)
+    # OR manually via workflow_dispatch (when the token is absent — see inputs above)
+    if: |
+      (github.event_name == 'repository_dispatch' && github.event.action == 'swagger-updated') || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout consumer repo
@@ -216,8 +243,8 @@ jobs:
           # "Parameter token or opts.auth is required".
           github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
           workflow: swagger-sync.yml
-          run_id: ${{ github.event.client_payload.provider_run_id }}
-          repo: ${{ github.event.client_payload.provider_repo }}
+          run_id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
+          repo: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
           name: swagger-generated-stubs
           path: tests/DeviceApi.Consumer.Tests/Generated/
         # Without PROVIDER_REPO_TOKEN the cross-repo download returns 404;
@@ -242,8 +269,8 @@ jobs:
         with:
           github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
           workflow: swagger-sync.yml
-          run_id: ${{ github.event.client_payload.provider_run_id }}
-          repo: ${{ github.event.client_payload.provider_repo }}
+          run_id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
+          repo: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
           name: consumer-notification
           path: /tmp/
         continue-on-error: true
@@ -272,18 +299,18 @@ jobs:
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          branch: swagger-sync/${{ github.event.client_payload.provider_sha }}
+          branch: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
           delete-branch: true
           title: >
             feat: new swagger endpoints from device-api
-            (${{ github.event.client_payload.provider_sha }})
+            (${{ inputs.provider_sha || github.event.client_payload.provider_sha }})
           body: |
             ## New or changed endpoints detected in `device-api`
 
             The provider's swagger changed in commit
-            [`${{ github.event.client_payload.provider_sha }}`](${{ github.event.client_payload.swagger_url }}).
+            [`${{ inputs.provider_sha || github.event.client_payload.provider_sha }}`](${{ inputs.swagger_url || github.event.client_payload.swagger_url }}).
 
-            The `SwaggerPactGenerator` tool found **${{ github.event.client_payload.stub_count }}** endpoint(s)
+            The `SwaggerPactGenerator` tool found **${{ inputs.stub_count || github.event.client_payload.stub_count }}** endpoint(s)
             not yet covered by a pact interaction and generated skeleton test stubs.
 
             ---
@@ -308,6 +335,6 @@ jobs:
           commit-message: |
             feat: add generated stubs for new swagger endpoints
 
-            Provider: ${{ github.event.client_payload.provider_repo }}
-            Provider SHA: ${{ github.event.client_payload.provider_sha }}
-            Stub count: ${{ github.event.client_payload.stub_count }}
+            Provider: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
+            Provider SHA: ${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
+            Stub count: ${{ inputs.stub_count || github.event.client_payload.stub_count }}

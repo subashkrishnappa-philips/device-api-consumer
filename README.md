@@ -98,7 +98,7 @@ On every `main` push, the pipeline fires a `repository_dispatch` event to `devic
 
 | Secret | Usage |
 |---|---|
-| `PROVIDER_REPO_TOKEN` | PAT with **Actions: write** on `device-api` — used to trigger provider verification pipeline |
+| `PROVIDER_REPO_SECRET` | PAT with **Actions: write** on `device-api` — used to trigger provider verification pipeline |
 
 ---
 
