@@ -39,10 +39,11 @@ env:
   DOTNET_NOLOGO: true
   CONFIGURATION: Release
 
-# Required for peter-evans/create-pull-request to open PRs
+# Required for peter-evans/create-pull-request to open PRs and create labels
 permissions:
   contents: write
   pull-requests: write
+  issues: write    # needed for create-pull-request to create labels that don't yet exist
 
 jobs:
   # ── Job 1: Build ─────────────────────────────────────────────────────────────
@@ -218,6 +219,22 @@ jobs:
           repo: ${{ github.event.client_payload.provider_repo }}
           name: swagger-generated-stubs
           path: tests/DeviceApi.Consumer.Tests/Generated/
+        # Without PROVIDER_REPO_TOKEN the cross-repo download returns 404;
+        # continue-on-error prevents the job from dying immediately.
+        continue-on-error: true
+
+      - name: Check stubs were downloaded
+        id: check-stubs
+        run: |
+          COUNT=$(find tests/DeviceApi.Consumer.Tests/Generated/ -name "*.cs" 2>/dev/null | wc -l)
+          echo "stub_count=$COUNT" >> $GITHUB_OUTPUT
+          if [ "$COUNT" -gt 0 ]; then
+            echo "stubs_exist=true" >> $GITHUB_OUTPUT
+            echo "Downloaded $COUNT stub file(s) — will open PR."
+          else
+            echo "stubs_exist=false" >> $GITHUB_OUTPUT
+            echo "::warning::No stub files downloaded. PROVIDER_REPO_TOKEN may not be configured, or the cross-repo artifact was unavailable. Skipping PR creation."
+          fi
 
       - name: Download consumer notification report
         uses: dawidd6/action-download-artifact@v6
@@ -250,6 +267,7 @@ jobs:
 
       # Creates or updates a branch and opens a PR
       - name: Create pull request with new stubs
+        if: steps.check-stubs.outputs.stubs_exist == 'true'
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -285,7 +303,7 @@ jobs:
           labels: |
             contract-update
             swagger-sync
-            provider: device-api
+            provider-device-api
           commit-message: |
             feat: add generated stubs for new swagger endpoints
 
