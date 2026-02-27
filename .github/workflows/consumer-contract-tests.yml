@@ -86,7 +86,8 @@ jobs:
   generate-pacts:
     name: Generate & Publish Pact Contracts
     runs-on: ubuntu-latest
-    needs: build    if: github.event_name != 'repository_dispatch' || github.event.action != 'swagger-updated'
+    needs: build
+    if: github.event_name != 'repository_dispatch' || github.event.action != 'swagger-updated'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -159,8 +160,10 @@ jobs:
       #
       # Required secret: PROVIDER_REPO_TOKEN — a PAT or fine-grained token
       # with "Actions: write" (workflow dispatch) permission on device-api repo.
+      # Guard: skip if the secret isn't configured yet to avoid
+      # "Parameter token or opts.auth is required" from peter-evans/repository-dispatch.
       - name: Dispatch provider verification
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && secrets.PROVIDER_REPO_TOKEN != ''
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PROVIDER_REPO_TOKEN }}
@@ -202,7 +205,10 @@ jobs:
       - name: Download generated stubs from provider CI
         uses: dawidd6/action-download-artifact@v6
         with:
-          github_token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          # Fall back to GITHUB_TOKEN when PROVIDER_REPO_TOKEN is not yet configured
+          # so the action receives a valid auth token and won't throw
+          # "Parameter token or opts.auth is required".
+          github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
           workflow: swagger-sync.yml
           run_id: ${{ github.event.client_payload.provider_run_id }}
           repo: ${{ github.event.client_payload.provider_repo }}
@@ -212,7 +218,7 @@ jobs:
       - name: Download consumer notification report
         uses: dawidd6/action-download-artifact@v6
         with:
-          github_token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
           workflow: swagger-sync.yml
           run_id: ${{ github.event.client_payload.provider_run_id }}
           repo: ${{ github.event.client_payload.provider_repo }}
