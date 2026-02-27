@@ -48,17 +48,43 @@ Defined in [`.github/workflows/consumer-contract-tests.yml`](.github/workflows/c
 |---|---|
 | `push` | Every push to `main` or `develop` |
 | `pull_request` | Every PR targeting `main` or `develop` |
+| `repository_dispatch: swagger-updated` | **Fired by `device-api` swagger-sync** when new/changed endpoints are detected |
 
 ### Jobs
 
+| Job | Runs when | What it does |
+|---|---|---|
+| `build` | push / PR | Restore + build solution |
+| `generate-pacts` | push / PR | Run consumer tests → upload `pact-contracts` artifact → dispatch to provider |
+| `create-stub-pr` | `swagger-updated` dispatch only | Download stubs from provider → open a PR in this repo with new stubs |
+
+---
+
+### Swagger update flow (most important)
+
+When the `device-api` team adds or changes an endpoint:
+
 ```
-build ──► generate-pacts
+device-api pushes new endpoint
+  └─► swagger-sync.yml detects uncovered endpoints
+       generates skeleton test stubs
+       dispatches "swagger-updated" ──────────────► this repo
+                                              │
+                                         create-stub-pr job
+                                              │
+                                         opens PR: "feat: new swagger endpoints"
+                                           └─ Generated/*.cs  ← auto-generated stubs
 ```
 
-| Job | What it does |
-|---|---|
-| `build` | `dotnet restore` + `dotnet build DeviceApi.Consumer.sln` |
-| `generate-pacts` | Runs consumer tests → uploads `contracts/*.json` as artifact `pact-contracts` → dispatches `pact-contracts-updated` event to `device-api` repo |
+**Your team's action when a stub PR arrives:**
+
+1. Open the PR, read the generated stubs in `tests/DeviceApi.Consumer.Tests/Generated/`
+2. Complete each interaction (fill in proper request/response details)
+3. Move completed tests to `tests/DeviceApi.Consumer.Tests/Contracts/DeviceApiConsumerTests.cs`
+4. Delete the stub file from `Generated/`
+5. Merge the PR → CI generates new pact → provider verifies automatically
+
+---
 
 ### Artifact
 
@@ -72,7 +98,7 @@ On every `main` push, the pipeline fires a `repository_dispatch` event to `devic
 
 | Secret | Usage |
 |---|---|
-| `PROVIDER_REPO_TOKEN` | PAT with **Actions: write** on `device-api` — used to trigger the provider verification pipeline |
+| `PROVIDER_REPO_TOKEN` | PAT with **Actions: write** on `device-api` — used to trigger provider verification pipeline |
 
 ---
 
@@ -102,10 +128,9 @@ The generated pact file will be written to `contracts/DeviceApi-Consumer-DeviceA
 
 All interactions are defined in [`tests/DeviceApi.Consumer.Tests/Contracts/DeviceApiConsumerTests.cs`](tests/DeviceApi.Consumer.Tests/Contracts/DeviceApiConsumerTests.cs).
 
-When the provider team adds new endpoints, they will:
-1. Run their `SwaggerPactGenerator` tool.
-2. Place generated stub files in `tests/DeviceApi.Consumer.Tests/Generated/`.
-3. Open a PR or send a notification.
+When the provider team adds new endpoints, their CI will automatically:
+1. Detect the uncovered endpoints via `SwaggerPactGenerator`.
+2. Open a PR in **this repo** with skeleton stub files in `tests/DeviceApi.Consumer.Tests/Generated/`.
 
 Your job is to:
 1. Review the stubs in `Generated/`.

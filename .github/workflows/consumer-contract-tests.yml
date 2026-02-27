@@ -9,6 +9,12 @@
 #   3. Upload pact file as artifact "pact-contracts" (retained 90 days)
 #   4. On main push: dispatch "pact-contracts-updated" to device-api (provider)
 #      so the provider pipeline immediately re-verifies the new contract.
+#
+# Additionally — on repository_dispatch: swagger-updated
+#   (fired by device-api's swagger-sync.yml when swagger changes):
+#   5. Download generated stubs from provider artifact
+#   6. Open a PR in this repo with new stub files in Generated/
+#      so the consumer team can review → move to Contracts/ → push
 # ──────────────────────────────────────────────────────────────────────────────
 
 name: Consumer Contract Tests
@@ -18,9 +24,14 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  repository_dispatch:
+    types:
+      - pact-contracts-updated  # fired by provider CI after API changes
+      - swagger-updated          # fired by provider's swagger-sync when new endpoints added
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Use event name in group so swagger-updated dispatches don't cancel running push jobs
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -28,11 +39,18 @@ env:
   DOTNET_NOLOGO: true
   CONFIGURATION: Release
 
+# Required for peter-evans/create-pull-request to open PRs
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   # ── Job 1: Build ─────────────────────────────────────────────────────────────
+  # Skipped on swagger-updated dispatch (no tests to run, just PR creation)
   build:
     name: Restore & Build
     runs-on: ubuntu-latest
+    if: github.event_name != 'repository_dispatch' || github.event.action != 'swagger-updated'
 
     steps:
       - name: Checkout
@@ -68,8 +86,7 @@ jobs:
   generate-pacts:
     name: Generate & Publish Pact Contracts
     runs-on: ubuntu-latest
-    needs: build
-
+    needs: build    if: github.event_name != 'repository_dispatch' || github.event.action != 'swagger-updated'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -156,3 +173,112 @@ jobs:
               "consumer_sha": "${{ github.sha }}",
               "consumer_ref": "${{ github.ref_name }}"
             }
+
+  # ── Job 3: Create Stub PR (swagger-updated dispatch only) ────────────────────
+  # Triggered when provider's swagger-sync.yml detects new/changed endpoints.
+  #
+  # Downloads the generated stub files from the provider CI artifact,
+  # places them in tests/DeviceApi.Consumer.Tests/Generated/, and opens
+  # a PR so the consumer team can review, complete, and merge the stubs.
+  #
+  # Consumer team workflow after merge:
+  #   1. Review Generated/*.cs — understand what changed
+  #   2. Move completed interactions to Contracts/DeviceApiConsumerTests.cs
+  #   3. Delete the stub from Generated/
+  #   4. Push → consumer CI generates new pact → provider CI re-verifies
+  create-stub-pr:
+    name: Open Stub PR for New Swagger Endpoints
+    runs-on: ubuntu-latest
+    if: github.event_name == 'repository_dispatch' && github.event.action == 'swagger-updated'
+
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      # Download the generated stubs uploaded by provider's swagger-sync job
+      - name: Download generated stubs from provider CI
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          workflow: swagger-sync.yml
+          run_id: ${{ github.event.client_payload.provider_run_id }}
+          repo: ${{ github.event.client_payload.provider_repo }}
+          name: swagger-generated-stubs
+          path: tests/DeviceApi.Consumer.Tests/Generated/
+
+      - name: Download consumer notification report
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          workflow: swagger-sync.yml
+          run_id: ${{ github.event.client_payload.provider_run_id }}
+          repo: ${{ github.event.client_payload.provider_repo }}
+          name: consumer-notification
+          path: /tmp/
+        continue-on-error: true
+
+      - name: List downloaded stubs
+        run: |
+          echo "── Generated stubs ─────────────────────────────"  
+          find tests/DeviceApi.Consumer.Tests/Generated/ -name "*.cs" || echo "(none)"
+
+      - name: Read notification report
+        id: notification
+        run: |
+          if [ -f /tmp/consumer-notification.md ]; then
+            # Truncate to 3000 chars to fit in PR body
+            BODY=$(head -c 3000 /tmp/consumer-notification.md)
+            echo "body<<EOF" >> $GITHUB_OUTPUT
+            echo "$BODY" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo 'body=No notification report available.' >> $GITHUB_OUTPUT
+          fi
+
+      # Creates or updates a branch and opens a PR
+      - name: Create pull request with new stubs
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: swagger-sync/${{ github.event.client_payload.provider_sha }}
+          delete-branch: true
+          title: >
+            feat: new swagger endpoints from device-api
+            (${{ github.event.client_payload.provider_sha }})
+          body: |
+            ## New or changed endpoints detected in `device-api`
+
+            The provider's swagger changed in commit
+            [`${{ github.event.client_payload.provider_sha }}`](${{ github.event.client_payload.swagger_url }}).
+
+            The `SwaggerPactGenerator` tool found **${{ github.event.client_payload.stub_count }}** endpoint(s)
+            not yet covered by a pact interaction and generated skeleton test stubs.
+
+            ---
+
+            ### What to do
+
+            1. Review the stub files added to `tests/DeviceApi.Consumer.Tests/Generated/`
+            2. Complete each stub interaction (fill in request/response details)
+            3. Move the completed tests to `tests/DeviceApi.Consumer.Tests/Contracts/DeviceApiConsumerTests.cs`
+            4. Delete the stub file from `Generated/`
+            5. Merge this PR — the CI pipeline will generate a new pact and notify the provider
+
+            ---
+
+            ### Provider notification
+
+            ${{ steps.notification.outputs.body }}
+          labels: |
+            contract-update
+            swagger-sync
+            provider: device-api
+          commit-message: |
+            feat: add generated stubs for new swagger endpoints
+
+            Provider: ${{ github.event.client_payload.provider_repo }}
+            Provider SHA: ${{ github.event.client_payload.provider_sha }}
+            Stub count: ${{ github.event.client_payload.stub_count }}
