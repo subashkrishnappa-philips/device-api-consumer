@@ -39,11 +39,13 @@ env:
   DOTNET_NOLOGO: true
   CONFIGURATION: Release
 
-# Required for peter-evans/create-pull-request to open PRs and create labels
+# Required for peter-evans/create-pull-request to open PRs and create labels,
+# and dorny/test-reporter to create GitHub Check runs.
 permissions:
   contents: write
   pull-requests: write
   issues: write    # needed for create-pull-request to create labels that don't yet exist
+  checks: write    # needed for dorny/test-reporter
 
 jobs:
   # ── Job 1: Build ─────────────────────────────────────────────────────────────
@@ -124,7 +126,6 @@ jobs:
       - name: Run consumer tests (generates pact contracts)
         run: |
           dotnet test tests/DeviceApi.Consumer.Tests \
-            --no-build \
             --configuration ${{ env.CONFIGURATION }} \
             --logger "trx;LogFileName=consumer-results.trx" \
             --logger "console;verbosity=normal" \
