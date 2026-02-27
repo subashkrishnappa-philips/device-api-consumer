@@ -88,6 +88,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.event_name != 'repository_dispatch' || github.event.action != 'swagger-updated'
+    env:
+      # Expose secret existence as an env var — the secrets context is NOT
+      # available in step-level if: expressions, but env vars are.
+      HAS_PROVIDER_TOKEN: ${{ secrets.PROVIDER_REPO_TOKEN != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -163,7 +167,7 @@ jobs:
       # Guard: skip if the secret isn't configured yet to avoid
       # "Parameter token or opts.auth is required" from peter-evans/repository-dispatch.
       - name: Dispatch provider verification
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && secrets.PROVIDER_REPO_TOKEN != ''
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.HAS_PROVIDER_TOKEN == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.PROVIDER_REPO_TOKEN }}
