@@ -28,7 +28,7 @@ on:
     types:
       - pact-contracts-updated  # fired by provider CI after API changes
       - swagger-updated          # fired by provider's swagger-sync when new endpoints added
-  # Manual trigger — use this when CONSUMER_REPO_SECRET is not yet configured and
+  # Manual trigger — use this when CONSUMER_REPO_TOKEN is not yet configured and
   # the automatic swagger-updated dispatch is skipped.  Find the provider run ID
   # in the swagger-sync job summary or the Actions URL.
   workflow_dispatch:
@@ -176,36 +176,30 @@ jobs:
           name: consumer-test-results-${{ github.sha }}
           path: TestResults/
 
-      - name: Publish test summary
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
         if: always()
-        uses: dorny/test-reporter@v1
         with:
-          name: Consumer Contract Test Results
-          path: TestResults/*.trx
-          reporter: dotnet-trx
-          fail-on-error: true
+            files: "TestResults/*.trx"
+            check_name: "Consumer Contract Test Results"
 
-      # ── Notify provider team: trigger provider verification pipeline ──────────
-      # Only fire on main branch pushes (not PRs) to avoid noise.
-      #
-      # Required secret: PROVIDER_REPO_TOKEN — a PAT or fine-grained token
-      # with "Actions: write" (workflow dispatch) permission on device-api repo.
-      # Guard: skip if the secret isn't configured yet to avoid
-      # "Parameter token or opts.auth is required" from peter-evans/repository-dispatch.
       - name: Dispatch provider verification
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.HAS_PROVIDER_TOKEN == 'true'
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.PROVIDER_REPO_TOKEN }}
-          repository: ${{ github.repository_owner }}/device-api
-          event-type: pact-contracts-updated
-          client-payload: |
-            {
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/${{ github.repository_owner }}/device-api/dispatches \
+            -f event_type='pact-contracts-updated' \
+            -F client_payload='{
               "consumer_repo": "${{ github.repository }}",
               "consumer_run_id": "${{ github.run_id }}",
               "consumer_sha": "${{ github.sha }}",
               "consumer_ref": "${{ github.ref_name }}"
-            }
+            }'
+        env:
+          GH_TOKEN: ${{ secrets.PROVIDER_REPO_TOKEN }}
 
   # ── Job 3: Create Stub PR (swagger-updated dispatch only) ────────────────────
   # Triggered when provider's swagger-sync.yml detects new/changed endpoints.
@@ -222,7 +216,7 @@ jobs:
   create-stub-pr:
     name: Open Stub PR for New Swagger Endpoints
     runs-on: ubuntu-latest
-    # Runs automatically via repository_dispatch (when CONSUMER_REPO_SECRET is set)
+    # Runs automatically via repository_dispatch (when CONSUMER_REPO_TOKEN is set)
     # OR manually via workflow_dispatch (when the token is absent — see inputs above)
     if: |
       (github.event_name == 'repository_dispatch' && github.event.action == 'swagger-updated') || github.event_name == 'workflow_dispatch'
@@ -234,21 +228,24 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # Download the generated stubs uploaded by provider's swagger-sync job
+# Download the generated stubs uploaded by provider's swagger-sync job
       - name: Download generated stubs from provider CI
-        uses: dawidd6/action-download-artifact@v6
+        uses: actions/download-artifact@v6
         with:
-          # Fall back to GITHUB_TOKEN when PROVIDER_REPO_TOKEN is not yet configured
-          # so the action receives a valid auth token and won't throw
-          # "Parameter token or opts.auth is required".
-          github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
-          workflow: swagger-sync.yml
-          run_id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
-          repo: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
+          # Required for cross-repo or specific run-id downloads
+          github-token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
+          
+          # Target Repository (e.g., "org/device-api")
+          repository: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
+          
+          # Specific Run ID from the provider
+          run-id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
+          
+          # Artifact name and destination
           name: swagger-generated-stubs
           path: tests/DeviceApi.Consumer.Tests/Generated/
-        # Without PROVIDER_REPO_TOKEN the cross-repo download returns 404;
-        # continue-on-error prevents the job from dying immediately.
+          
+        # Handle cases where token isn't set or run isn't found
         continue-on-error: true
 
       - name: Check stubs were downloaded
@@ -265,14 +262,21 @@ jobs:
           fi
 
       - name: Download consumer notification report
-        uses: dawidd6/action-download-artifact@v6
+        uses: actions/download-artifact@v4
         with:
-          github_token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
-          workflow: swagger-sync.yml
-          run_id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
-          repo: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
+          # Use the provided token or fall back to default
+          github-token: ${{ secrets.PROVIDER_REPO_TOKEN || github.token }}
+          
+          # Cross-repo source (e.g., "org/device-api")
+          repository: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
+          
+          # The specific run to pull from
+          run-id: ${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}
+          
           name: consumer-notification
           path: /tmp/
+          
+        # Keeps the workflow alive if the artifact isn't found or permissions fail
         continue-on-error: true
 
       - name: List downloaded stubs
@@ -293,48 +297,46 @@ jobs:
             echo 'body=No notification report available.' >> $GITHUB_OUTPUT
           fi
 
-      # Creates or updates a branch and opens a PR
-      - name: Create pull request with new stubs
+      - name: Create or Update Pull Request
         if: steps.check-stubs.outputs.stubs_exist == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
-          delete-branch: true
-          title: >
-            feat: new swagger endpoints from device-api
-            (${{ inputs.provider_sha || github.event.client_payload.provider_sha }})
-          body: |
-            ## New or changed endpoints detected in `device-api`
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROVIDER_SHA: ${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
+          STUB_COUNT: ${{ inputs.stub_count || github.event.client_payload.stub_count }}
+          SWAGGER_URL: ${{ inputs.swagger_url || github.event.client_payload.swagger_url }}
+          BRANCH_NAME: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
+          # The URL to the specific run that triggered this or provided the artifacts
+          PROVIDER_RUN_URL: "https://github.com/${{ inputs.provider_repo || github.event.client_payload.provider_repo }}/actions/runs/${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}"
+        run: |
+          # 1. Setup Git Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-            The provider's swagger changed in commit
-            [`${{ inputs.provider_sha || github.event.client_payload.provider_sha }}`](${{ inputs.swagger_url || github.event.client_payload.swagger_url }}).
+          # 2. Commit and Push changes
+          git checkout -b "$BRANCH_NAME"
+          git add tests/DeviceApi.Consumer.Tests/Generated/
+          git commit -m "feat: update generated stubs ($PROVIDER_SHA)"
+          git push origin "$BRANCH_NAME" --force
 
-            The `SwaggerPactGenerator` tool found **${{ inputs.stub_count || github.event.client_payload.stub_count }}** endpoint(s)
-            not yet covered by a pact interaction and generated skeleton test stubs.
+          # 3. Check for existing PR
+          PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number')
 
-            ---
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Creating new PR..."
+            PR_NUMBER=$(gh pr create \
+              --title "feat: new swagger endpoints from device-api ($PROVIDER_SHA)" \
+              --body "## New or changed endpoints detected in \`device-api\`
+              
+              The provider's swagger changed in commit [\`$PROVIDER_SHA\`]($SWAGGER_URL).
+              The tool found **$STUB_COUNT** new endpoint(s).
 
-            ### What to do
+              ---
+              ### Provider notification
+              ${{ steps.notification.outputs.body }}" \
+              --label "contract-update,swagger-sync,provider-device-api" \
+              --base main \
+              --json number --jq '.number')
+          fi
 
-            1. Review the stub files added to `tests/DeviceApi.Consumer.Tests/Generated/`
-            2. Complete each stub interaction (fill in request/response details)
-            3. Move the completed tests to `tests/DeviceApi.Consumer.Tests/Contracts/DeviceApiConsumerTests.cs`
-            4. Delete the stub file from `Generated/`
-            5. Merge this PR — the CI pipeline will generate a new pact and notify the provider
-
-            ---
-
-            ### Provider notification
-
-            ${{ steps.notification.outputs.body }}
-          labels: |
-            contract-update
-            swagger-sync
-            provider-device-api
-          commit-message: |
-            feat: add generated stubs for new swagger endpoints
-
-            Provider: ${{ inputs.provider_repo || github.event.client_payload.provider_repo }}
-            Provider SHA: ${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
-            Stub count: ${{ inputs.stub_count || github.event.client_payload.stub_count }}
+          # 4. Post a comment with the Provider Run Link
+          gh pr comment "$PR_NUMBER" --body "🔍 **Traceability Link:** These stubs were generated based on Provider Run: [View Provider CI Run]($PROVIDER_RUN_URL)"
