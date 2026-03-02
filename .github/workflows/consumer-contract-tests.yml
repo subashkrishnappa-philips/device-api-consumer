@@ -363,7 +363,7 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           git add tests/DeviceApi.Consumer.Tests/Generated/
           git commit -m "feat: update generated stubs ($PROVIDER_SHA)"
-          git push origin "$BRANCH_NAME" --force
+          git push origin "$BRANCH_NAME"
 
           # 3. Write PR body to a temp file so special characters are never
           #    interpreted as shell commands.
