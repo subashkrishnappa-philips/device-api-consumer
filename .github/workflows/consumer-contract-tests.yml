@@ -185,20 +185,24 @@ jobs:
 
       - name: Dispatch provider verification
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.HAS_PROVIDER_TOKEN == 'true'
-        uses: peter-evans/repository-dispatch@v3
+        uses: actions/github-script@v7
         with:
           # PROVIDER_REPO_TOKEN must be a classic PAT with `repo` scope
           # OR a fine-grained PAT with "Contents: write" on device-api.
-          token: ${{ secrets.PROVIDER_REPO_TOKEN }}
-          repository: ${{ github.repository_owner }}/device-api
-          event-type: pact-contracts-updated
-          client-payload: |
-            {
-              "consumer_repo":   "${{ github.repository }}",
-              "consumer_run_id": "${{ github.run_id }}",
-              "consumer_sha":    "${{ github.sha }}",
-              "consumer_ref":    "${{ github.ref_name }}"
-            }
+          # (repository_dispatch requires Contents:write, not Actions:write)
+          github-token: ${{ secrets.PROVIDER_REPO_TOKEN }}
+          script: |
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo:  'device-api',
+              event_type: 'pact-contracts-updated',
+              client_payload: {
+                consumer_repo:   `${context.repo.owner}/${context.repo.repo}`,
+                consumer_run_id: String(context.runId),
+                consumer_sha:    context.sha,
+                consumer_ref:    context.ref.replace('refs/heads/', '')
+              }
+            });
 
   # ── Job 3: Create Stub PR (swagger-updated dispatch only) ────────────────────
   # Triggered when provider's swagger-sync.yml detects new/changed endpoints.
