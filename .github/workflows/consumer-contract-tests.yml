@@ -351,7 +351,7 @@ jobs:
           PROVIDER_SHA: ${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
           STUB_COUNT: ${{ inputs.stub_count || github.event.client_payload.stub_count }}
           SWAGGER_URL: ${{ inputs.swagger_url || github.event.client_payload.swagger_url }}
-          BRANCH_NAME: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
+          BRANCH_NAME: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}-${{ github.run_id }}
           PROVIDER_RUN_URL: "https://github.com/${{ inputs.provider_repo || github.event.client_payload.provider_repo }}/actions/runs/${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}"
           NOTIFICATION_BODY: ${{ steps.notification.outputs.body }}
         run: |
