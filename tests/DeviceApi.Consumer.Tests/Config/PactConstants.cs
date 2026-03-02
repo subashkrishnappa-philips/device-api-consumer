@@ -7,7 +7,7 @@ namespace DeviceApi.Consumer.Tests.Config;
 /// </summary>
 public static class PactConstants
 {
-    // ── Participant names ────────────────────────────────────────────────────
+    // ── Participant names ──────────────────────────────────────────────────
 
     /// <summary>Name of this consumer as it will appear in the pact file.</summary>
     public const string ConsumerName = "DeviceApi-Consumer";
