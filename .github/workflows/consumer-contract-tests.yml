@@ -183,26 +183,79 @@ jobs:
             files: "TestResults/*.trx"
             check_name: "Consumer Contract Test Results"
 
+      # ── Dispatch provider verification ──────────────────────────────────────
+      # Fires repository_dispatch on device-api so provider CI re-verifies
+      # the new pact immediately after consumer merges to main.
+      #
+      # PROVIDER_REPO_TOKEN requirements (repository_dispatch API):
+      #   • Classic PAT  → repo scope
+      #   • Fine-grained PAT → Resource owner must include device-api's owner,
+      #                        Repository access must include device-api,
+      #                        Permission: Contents = Write
+      #
+      # If the token is wrong the step warns and writes a summary — it does NOT
+      # fail the consumer CI (the pact artifact is already uploaded above).
       - name: Dispatch provider verification
         if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.HAS_PROVIDER_TOKEN == 'true'
+        continue-on-error: true          # misconfigured PAT must not break consumer CI
         uses: actions/github-script@v7
         with:
-          # PROVIDER_REPO_TOKEN must be a classic PAT with `repo` scope
-          # OR a fine-grained PAT with "Contents: write" on device-api.
-          # (repository_dispatch requires Contents:write, not Actions:write)
           github-token: ${{ secrets.PROVIDER_REPO_TOKEN }}
           script: |
-            await github.rest.repos.createDispatchEvent({
-              owner: context.repo.owner,
-              repo:  'device-api',
-              event_type: 'pact-contracts-updated',
-              client_payload: {
-                consumer_repo:   `${context.repo.owner}/${context.repo.repo}`,
-                consumer_run_id: String(context.runId),
-                consumer_sha:    context.sha,
-                consumer_ref:    context.ref.replace('refs/heads/', '')
-              }
-            });
+            const providerRepo = 'device-api';
+            const owner        = context.repo.owner;
+
+            try {
+              await github.rest.repos.createDispatchEvent({
+                owner,
+                repo:         providerRepo,
+                event_type:   'pact-contracts-updated',
+                client_payload: {
+                  consumer_repo:   `${owner}/${context.repo.repo}`,
+                  consumer_run_id: String(context.runId),
+                  consumer_sha:    context.sha,
+                  consumer_ref:    context.ref.replace('refs/heads/', '')
+                }
+              });
+
+              console.log(`✅ repository_dispatch sent to ${owner}/${providerRepo}`);
+              await core.summary
+                .addHeading('Provider Dispatch', 3)
+                .addRaw(`✅ \`pact-contracts-updated\` dispatched to **${owner}/${providerRepo}**.`)
+                .write();
+
+            } catch (err) {
+              // Surface the real cause instead of a cryptic red X on the step.
+              const is403 = err.status === 403;
+              const msg = is403
+                ? [
+                    `repository_dispatch on ${owner}/${providerRepo} returned 403.`,
+                    ``,
+                    `PROVIDER_REPO_TOKEN does not have the required permissions.`,
+                    `Fix one of the following in GitHub → Settings → Developer settings → Personal access tokens:`,
+                    ``,
+                    `  Classic PAT  : enable the "repo" scope`,
+                    `  Fine-grained : set Resource owner = ${owner}`,
+                    `                 Repository access  = ${providerRepo} (or "All repositories")`,
+                    `                 Permission         : Contents → Write`,
+                    ``,
+                    `The consumer pact artifact has already been uploaded — the provider`,
+                    `team can trigger verification manually or wait for their next push.`
+                  ].join('\n')
+                : `Dispatch failed (HTTP ${err.status}): ${err.message}`;
+
+              core.warning(msg);
+
+              await core.summary
+                .addHeading('Provider Dispatch — Action Required', 3)
+                .addRaw(`⚠️ \`pact-contracts-updated\` could **not** be dispatched to **${owner}/${providerRepo}**.\n\n`)
+                .addRaw('```\n' + msg + '\n```')
+                .write();
+
+              // Re-throw so continue-on-error marks the step as failed (yellow)
+              // without failing the whole job.
+              throw err;
+            }
 
   # ── Job 3: Create Stub PR (swagger-updated dispatch only) ────────────────────
   # Triggered when provider's swagger-sync.yml detects new/changed endpoints.
