@@ -349,8 +349,8 @@ jobs:
           STUB_COUNT: ${{ inputs.stub_count || github.event.client_payload.stub_count }}
           SWAGGER_URL: ${{ inputs.swagger_url || github.event.client_payload.swagger_url }}
           BRANCH_NAME: swagger-sync/${{ inputs.provider_sha || github.event.client_payload.provider_sha }}
-          # The URL to the specific run that triggered this or provided the artifacts
           PROVIDER_RUN_URL: "https://github.com/${{ inputs.provider_repo || github.event.client_payload.provider_repo }}/actions/runs/${{ inputs.provider_run_id || github.event.client_payload.provider_run_id }}"
+          NOTIFICATION_BODY: ${{ steps.notification.outputs.body }}
         run: |
           # 1. Setup Git Identity
           git config user.name "github-actions[bot]"
@@ -362,25 +362,38 @@ jobs:
           git commit -m "feat: update generated stubs ($PROVIDER_SHA)"
           git push origin "$BRANCH_NAME" --force
 
-          # 3. Check for existing PR
+          # 3. Write PR body to a temp file so special characters are never
+          #    interpreted as shell commands.
+          PR_BODY_FILE=$(mktemp /tmp/pr-body.XXXXXX.md)
+          cat > "$PR_BODY_FILE" <<'PREOF'
+## New or changed endpoints detected in `device-api`
+
+The provider's swagger changed — see commit and stub details in the environment variables.
+
+---
+### Provider notification
+PREOF
+          # Append the notification body (env var, not inline expansion)
+          printf '%s\n' "$NOTIFICATION_BODY" >> "$PR_BODY_FILE"
+
+          # 4. Check for existing PR
           PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number')
 
           if [ -z "$PR_NUMBER" ]; then
             echo "Creating new PR..."
-            PR_NUMBER=$(gh pr create \
+            # gh pr create outputs the PR URL; extract the number from it.
+            PR_URL=$(gh pr create \
               --title "feat: new swagger endpoints from device-api ($PROVIDER_SHA)" \
-              --body "## New or changed endpoints detected in \`device-api\`
-              
-              The provider's swagger changed in commit [\`$PROVIDER_SHA\`]($SWAGGER_URL).
-              The tool found **$STUB_COUNT** new endpoint(s).
-
-              ---
-              ### Provider notification
-              ${{ steps.notification.outputs.body }}" \
+              --body-file "$PR_BODY_FILE" \
               --label "contract-update,swagger-sync,provider-device-api" \
-              --base main \
-              --json number --jq '.number')
+              --base main)
+            PR_NUMBER="${PR_URL##*/}"
+          else
+            # Update body of existing PR
+            gh pr edit "$PR_NUMBER" --body-file "$PR_BODY_FILE"
           fi
 
-          # 4. Post a comment with the Provider Run Link
-          gh pr comment "$PR_NUMBER" --body "🔍 **Traceability Link:** These stubs were generated based on Provider Run: [View Provider CI Run]($PROVIDER_RUN_URL)"
+          rm -f "$PR_BODY_FILE"
+
+          # 5. Post a comment with the Provider Run Link
+          gh pr comment "$PR_NUMBER" --body "🔍 **Traceability Link:** These stubs were generated from Provider Run: [View Provider CI Run]($PROVIDER_RUN_URL)"
