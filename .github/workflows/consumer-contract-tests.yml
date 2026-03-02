@@ -375,7 +375,12 @@ jobs:
             printf '%s\n' "$NOTIFICATION_BODY"
           } > "$PR_BODY_FILE"
 
-          # 4. Check for existing PR
+          # 4. Ensure labels exist (--force is a no-op if the label already exists)
+          gh label create "contract-update"     --color "0075ca" --description "Contract change" --force
+          gh label create "swagger-sync"        --color "e4e669" --description "Triggered by swagger-sync" --force
+          gh label create "provider-device-api" --color "d93f0b" --description "Provider: device-api" --force
+
+          # 5. Check for existing PR
           PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number')
 
           if [ -z "$PR_NUMBER" ]; then
